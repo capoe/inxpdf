@@ -2,7 +2,7 @@
 import os
 pypath = os.path.join(os.getcwd())
 path = os.path.join(os.getcwd(), "bin")
-ofs = open('./bin/SOZIRC', 'w')
+ofs = open('./bin/INXPDFRC', 'w')
 ofs.write('''\
 #! /bin/bash
 export PYTHONPATH="${{PYTHONPATH}}:{pypath:s}"
