@@ -1,7 +1,14 @@
+## Setup
 ```bash
 ./configure.py
 source bin/INXPDFRC
 jinxpdf -h
+```
+
+## Usage
+```bash
+cd template
+jinxpdf -f cover.svg -p cover.pdf
 ```
 
 ## Acknowledgements
