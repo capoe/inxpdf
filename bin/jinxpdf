@@ -1,0 +1,677 @@
+#! /usr/bin/env python
+from __future__ import print_function
+import numpy as np
+import inxpdf
+from inxpdf.logger import log, endl, flush, os, sys
+from inxpdf.moxml import *
+SCRIPTDIR = os.path.join(
+    os.path.dirname(
+        os.path.abspath(__file__)), "..")
+print(SCRIPTDIR)
+
+# PROGRAM OPTIONS
+log.Connect()
+log.AddArg('file', type=str, default=None)
+log.AddArg('output', type=str, default='')
+log.AddArg('pdf', type=str, default='')
+log.AddArg('pdf2ps2pdf', type=bool, default=False)
+log.AddArg('render', type=(list,str), default=[])
+log.AddArg('canvas_layer_label', type=str, default='Canvas')
+log.AddArg('frames_layer_label', type=str, default='Frames')
+log.AddArg('controls_layer_label', type=str, default='Controls')
+log.AddArg('auto_texts_layer_label', type=str, default='Texts')
+log.AddArg('reverse_frames', type=str, default=False)
+log.AddArg('mirror', type=str, default=False)
+log.AddArg('hide_frames', type=bool, default=True)
+log.AddArg('hide_controls', type=bool, default=True)
+log.AddArg('sort', type=str, default='xy', help="Choices include: 'labels', 'x', 'xy', 'path'")
+log.AddArg('verbose', type=bool, default=False)
+log.AddArg('tmp_prefix', type=str, default='frame')
+log.AddArg('clean', 'toggle', default=True)
+options = log.Parse()
+options.render = set(map(int,options.render))
+
+# SYSTEM PATHS
+SOZI_PATH = os.path.join(SCRIPTDIR, 'js')
+
+# NAMESPACES
+SVG_NS = '{http://www.w3.org/2000/svg}'
+INX_NS = '{http://www.inkscape.org/namespaces/inkscape}'
+SOZI_NS = "{http://sozi.baierouge.fr}"
+
+class Path(object):
+    def __init__(self, node):
+        self.node = node
+        self.id = self.node.attrib['id']
+
+        raw = self.node.attrib['d']
+        sp = raw.split()
+        self.mode = sp.pop(0)        
+        xy_dxys = []
+        for s in sp:
+            ss = s.split(',')
+            x = float(ss[0])
+            y = float(ss[1])
+            xy_dxys.append(np.array([x,y]))
+        self.xys = []
+        self.xys.append(xy_dxys.pop(0))
+        for xy in xy_dxys:
+            self.xys.append(self.xys[-1]+xy)
+        return
+
+class Rect(object):
+    def __init__(self, node):
+        self.node = node
+        self.id = self.node.attrib['id']
+        self.x = float(self.node.attrib['x'])
+        self.y = float(self.node.attrib['y'])
+        self.xy = np.array([self.x, self.y])        
+        if self.node.attrib.has_key('transform'):
+            raw = self.node.attrib['transform']
+            if 'matrix' in raw:
+                raw = raw[7:-1].split(',')
+                t = [ float(r) for r in raw ]
+                self.tf = np.array([ [t[0],t[2]], [t[1],t[3]] ])
+                self.xy = np.dot(self.tf, self.xy)
+                self.x = self.xy[0]
+                self.y = self.xy[1]
+            elif 'scale' in raw:
+                raw = raw[6:-1].split(',')
+                sx = float(raw[0])
+                sy = float(raw[1])
+                self.x *= sx
+                self.y *= sy
+                self.xy = np.array([self.x, self.y])
+            elif 'translate' in raw:
+                dr = map(float, raw.replace('translate','').replace('(','').replace(')','').split(','))
+                self.x = self.x + dr[0]
+                self.y = self.y + dr[1]
+                self.xy = np.array([self.x, self.y])
+            else:
+                pass
+
+        self.h = float(self.node.attrib['height'])
+        self.w = float(self.node.attrib['width'])
+        if VERBOSE: log << "Frame @ %+03.4e %+03.4e" % (self.x, self.y) << endl
+        return
+
+class Text(object):
+    def __init__(self, node):
+        self.node = node
+        self.x = float(self.node.attrib['x'])
+        self.y = float(self.node.attrib['y'])
+        self.xy = np.array([self.x, self.y])
+
+        if self.node.attrib.has_key('transform'):
+            raw = self.node.attrib['transform']
+            if 'matrix' in raw:
+                raw = raw[7:-1].split(',')
+                t = [ float(r) for r in raw ]
+                self.tf = np.array([ [t[0],t[2]], [t[1],t[3]] ])
+                self.xy = np.dot(self.tf, self.xy)
+                self.x = self.xy[0]
+                self.y = self.xy[1]
+            else:
+                pass
+        
+        self.text = ''
+        self.lines = []
+        self.tspan = None
+        for child in self.node:
+            if child.tag == '%stspan' % SVG_NS:
+                self.tspan = child
+                if child.text != None:
+                    if self.text != '': self.text+='\n'
+                    self.text += child.text
+                    self.lines.append(child.text)
+        if VERBOSE: log << "Text %-4s @ %+03.4e %+03.4e" % ("'"+self.text+"'", self.x, self.y) << endl
+        return
+    def IsEmpty(self):
+        return self.text == ''
+    def IsNumber(self):
+        try:
+            int(self.text)
+            return True
+        except ValueError:
+            return False
+    def Set(self, text):
+        self.tspan.text = text
+        return
+
+class Frame(object):
+    def __init__(self, node, **kwargs):
+        self.node = node
+        self.rect = Rect(self.node)
+        default_args = {\
+            'id':None,
+             'title':None,
+             'refid':self.rect.node.attrib['id'],
+             'sequence':None,
+            'transition-path-hide':'true',
+            'transition-profile':'accelerate-decelerate',
+            'transition-zoom-percent':'0.0',
+             'transition-duration-ms':"1000.0",
+            'transition-path':None,
+             'timeout-ms':"5000.0",
+             'timeout-enable':"false",
+             'show-in-frame-list':"true",
+             'clip':"false",
+             'hide':"true",
+            'sozi_ns':"ns1"}
+        for key in default_args.keys():
+            if not kwargs.has_key(key):
+                kwargs[key] = default_args[key]
+        self.args = kwargs
+        # Rank from text
+        self.has_rank = False
+        self.rank = None
+        self.dist_to_rank = None
+        # Transition from text
+        self.has_transition = False
+        self.transition = None
+        self.dist_to_transition = None
+        return
+    def UpdateProperties(self, defaults):
+        for key in defaults.keys():
+            if not self.args.has_key(key):
+                log << log.mr << "Invalid defaults key '%s'" % key << endl
+            else:
+                self.args[key] = defaults[key]
+        return
+    def SetTransition(self, transition, dist_to_transition):
+        if self.has_transition:
+            if self.dist_to_transition > dist_to_transition:
+                self.dist_to_transition = dist_to_transition
+                self.transition = transition
+            else: pass
+        else:
+            self.has_transition = True
+            self.transition = transition
+            self.dist_to_transition = dist_to_transition
+        self.args['transition_duration_ms'] = '%1.3f' % (float(self.transition)*1000.)
+        return
+    def SetRank(self, rank, dist_to_rank):
+        if self.has_rank:
+            if self.dist_to_rank > dist_to_rank:
+                self.dist_to_rank = dist_to_rank
+                self.rank = int(rank)
+            else: pass
+        else:
+            self.has_rank = True
+            self.rank = int(rank)
+            self.dist_to_rank = dist_to_rank
+        return
+    def SetSequenceIndex(self, index):
+        self.sequ_id = index
+        self.args['sequence'] = '%d' % index
+        self.args['title'] = '%d' % index
+        self.args['id'] = '%d' % index
+        return
+    def ToElement(self):
+        ns_args = {}
+        for key in self.args:
+            if key == 'id': ns_key = key
+            else: ns_key = '%s%s' % (SOZI_NS, key)
+            if self.args[key] != None:
+                ns_args[ns_key] = self.args[key]
+            else: pass
+        par = etree.Element('svg', attrib={'%screator' % SOZI_NS : "creator"})
+        child = etree.SubElement(par, '%sframe' % SOZI_NS, attrib=ns_args)
+        # etree.Element('ns1:frame', nsmap={'ns1' : SOZI_NS})
+        return par
+
+
+def bin_objects_1d(value_list, object_list, n_bins=None, dv=None):
+    """
+    Groups objects from <object_list> according to their 
+    respective values in <value_list> into <n_bins> bins
+    """
+    v_min = min(value_list)
+    v_max = max(value_list)
+    if dv == None:
+        # Calculate bin width
+        dv = (v_max-v_min)/(n_bins-1)
+    else:
+        # Calculate number of bins
+        if n_bins != None: print("WARNING Overriding number of bins <n_bins> using <dv>")
+        n_bins = int((v_max-v_min)/dv+0.5)+1
+    v_min -= 0.5*dv
+    v_max += 0.5*dv
+    bin_loc = []
+    bin_obj = []
+    for i in range(n_bins):
+        bin_obj.append([])
+        bin_loc.append(v_min+(i+0.5)*dv)
+    for v,o in zip(value_list, object_list):
+        i = int((v-v_min)/dv)
+        bin_obj[i].append(o)
+    return n_bins, dv, bin_loc, bin_obj
+
+
+# PROCESS OPTIONS
+in_svg = options.file
+if options.output != '':
+    out_svg = options.output
+else:
+    sp = in_svg.split('.')
+    out_svg = ''
+    for i in range(len(sp)-1):
+        out_svg += sp[i]+'.'
+    out_svg += 'sozi.svg'
+CANVAS_LABEL = options.canvas_layer_label
+FRAMES_LABEL = options.frames_layer_label
+CONTROLS_LABEL = options.controls_layer_label
+TEXTS_LABEL = options.auto_texts_layer_label
+VERBOSE = options.verbose
+
+# SANITY CHECKS
+if not os.path.isfile(in_svg):
+    raise IOError("No such svg-file: '%s'" % in_svg)
+log << "Source: '%s' => Target: '%s'" % (in_svg, out_svg) << endl
+
+# SVG TREE
+tree = XmlTree(in_svg)
+svg = tree.GetRoot()
+
+# BASE LAYERS
+base_layers = tree.GetAll('%sg' % SVG_NS)
+log << "Found" << len(base_layers) << "base layers" << endl
+
+
+# GENERATE FRAMES
+frames = []
+log << "Generating frames from layer '%s'" % FRAMES_LABEL << endl
+gs_frames = tree.GetAllWhere('%sg' % SVG_NS, key=lambda x: x.node.attrib['%slabel' % INX_NS] if x.node.attrib.has_key('%slabel' % INX_NS) else '', value=FRAMES_LABEL)
+for g in gs_frames:
+    g_rects = g.DiveForAll('%srect' % SVG_NS)
+    for rect in g_rects:
+        new_frame = Frame(node=rect.node)
+        frames.append(new_frame)
+
+# GENERATE TRAJECTORY
+paths = []
+log << "Generating trajectory from layer '%s'" % FRAMES_LABEL << endl
+for g in gs_frames:
+    g_paths = g.DiveForAll('%spath' % SVG_NS)
+    for path in g_paths:
+        new_path = Path(node=path.node)
+        paths.append(new_path)
+trajs = []
+for p in paths:
+    if p.id.lower() == 'trajectory':
+        trajs.append(p)
+if len(trajs) > 1:
+    log << "ERROR More than one trajectory (path id 'trajectory') defined in layer '%s'" % FRAMES_LABEL << endl
+    log.xxquit('Abort.')
+if len(trajs):
+    traj = trajs[0]
+else:
+    traj = None
+
+
+# GENERATE SEQUENCE QUALIFIERS
+sequ_texts = []
+log << "Generating sequence from layer '%s'" % FRAMES_LABEL << endl
+gs = tree.GetAllWhere('%sg' % SVG_NS, key=lambda x: x.node.attrib['%slabel' % INX_NS] if x.node.attrib.has_key('%slabel' % INX_NS) else '', value=FRAMES_LABEL)
+for g in gs:
+    g_texts = g.DiveForAll('%stext' % SVG_NS)
+    for text in g_texts:
+        new_text = Text(node=text.node)
+        if new_text.IsNumber():
+            sequ_texts.append(new_text)
+
+if options.verbose:
+    print("Sequence texts:")
+    for t in sequ_texts:
+        print("SEQU", t.text)
+
+
+
+if options.sort == 'x':
+    log << "Sort frames along x" << endl
+    frames = sorted(frames, key=lambda f: f.rect.x)
+elif options.sort == 'xy':
+    log << "Sort frames along x, then along y" << endl
+    avg_h = 0.0
+    avg_w = 0.0
+    for f in frames:
+        avg_h += f.rect.h
+        avg_w += f.rect.w
+    avg_h /= len(frames)
+    avg_w /= len(frames)    
+    xs = [ f.rect.y for f in frames ]
+    n_bins, d_bin, x_bin, x_fs = bin_objects_1d(xs, frames, dv=0.5*avg_w)
+    sorted_frames = []
+    for fs in x_fs:
+        fs = sorted(fs, key=lambda f: f.rect.x)
+        sorted_frames = sorted_frames + fs
+    frames = sorted_frames
+elif options.sort == 'labels':
+    # ASSIGN SEQUENCE QUALIFIERS
+    log << "Assigning sequence qualifiers to frames" << endl
+    unranked_frames = frames
+    log << "Created %d frames" % len(frames) << endl
+    ranked_frames = []
+    for text in sequ_texts:
+        if unranked_frames == []: break
+        min_dr2 = np.dot(text.xy-frames[0].rect.xy, text.xy-frames[0].rect.xy)
+        closest_frame = frames[0]
+        for frame in unranked_frames:
+            dr2 = np.dot(text.xy-frame.rect.xy, text.xy-frame.rect.xy)
+            if dr2 < min_dr2:
+                min_dr2 = dr2
+                closest_frame = frame
+        closest_frame.SetRank(text.text, min_dr2**0.5)
+        unranked_frames.remove(closest_frame)
+        ranked_frames.append(closest_frame)
+    frames = ranked_frames
+    frames = sorted(frames, key=lambda f: f.rank if not options.reverse_frames else -f.rank)
+elif options.sort == 'path':
+    log << "Installing trajectory" << endl
+    if traj == None:
+        log.xxquit('Sort by trajectory, but no trajectory defined.')
+    ranked_frames = []
+    n_cutoff = 0
+    for xy in traj.xys:
+        min_dr2 = np.dot(xy-frames[0].rect.xy, xy-frames[0].rect.xy)
+        closest_frame = frames[0]
+        for frame in frames:
+            dr2 = np.dot(xy-frame.rect.xy, xy-frame.rect.xy)
+            if dr2 < min_dr2:
+                min_dr2 = dr2
+                closest_frame = frame
+        if min_dr2 > 10*10:
+            n_cutoff += 1
+            continue
+        if closest_frame in ranked_frames:
+            # This frame will be visited multiple times
+            new_frame = Frame(closest_frame.node)
+            ranked_frames.append(new_frame)
+        else:
+            ranked_frames.append(closest_frame)
+    frames = ranked_frames
+    log << "%d stop(s) not assigned due to cut-off" % n_cutoff << endl
+else:
+    assert False
+for f in frames:
+    f.rank = frames.index(f)+1
+log << "Created %d ranked frames" % len(frames) << endl
+
+frame_idx = 0
+for frame in frames:
+    frame_idx += 1
+    frame.SetSequenceIndex(frame_idx)
+
+# PROCESS CONTROLS
+controls_texts = []
+log << "Reading controls from layer '%s'" % CONTROLS_LABEL << endl
+gs_controls = tree.GetAllWhere('%sg' % SVG_NS, key=lambda x: x.node.attrib['%slabel' % INX_NS] if x.node.attrib.has_key('%slabel' % INX_NS) else '', value=CONTROLS_LABEL)
+for g in gs_controls:
+    g_texts = g.DiveForAll('%stext' % SVG_NS)
+    for text in g_texts:
+        new_text = Text(node=text.node)
+        controls_texts.append(new_text)
+
+defaults_text = None
+protocol_text = None
+actions_text = None
+for text in controls_texts:
+    if text.IsEmpty(): continue
+    if 'DEFAULTS' in text.lines[0]:
+        defaults_text = text
+        log << "Found defaults" << endl
+    elif 'PROTOCOL' in text.lines[0]:
+        log << "Found protocol" << endl
+        protocol_text = text
+    elif 'ACTIONS' in text.lines[0]:
+        log << "Found actions" << endl
+        actions_text = text
+    else:
+        log << log.mr << "Ignoring text object in controls layer: '%s ...'" % text.lines[0] << endl
+
+# CONFIGURE CONTROLS DEFAULTS
+if defaults_text != None:
+    log << "Installing slide defaults" << endl
+    expand_abbrev = {}
+    defaults = {}
+    for ln in defaults_text.lines:
+        if 'DEFAULTS' in ln: continue
+        sp = ln.split('=')
+        full = sp[0].strip()
+        short = sp[1].strip()
+        value = sp[2].strip()
+        expand_abbrev[short] = full
+        expand_abbrev[full] = full
+        defaults[full] = value
+    for f in frames:
+        f.UpdateProperties(defaults)
+
+subcanvas_map = {}
+action_id_props = {}
+for i in range(10):
+    gs_layer = tree.GetAllWhere('%sg' % SVG_NS, key=lambda x: x.node.attrib['%slabel' % INX_NS] if x.node.attrib.has_key('%slabel' % INX_NS) else '', value="Canvas_%02d" % i)
+    if len(gs_layer) > 0:
+        subcanvas_map[i+1] = gs_layer[0]
+if actions_text != None:
+    log << "Installing actions" << endl
+    for ln in actions_text.lines:
+        if ln.startswith('#') or ln.startswith('ACTIONS'): continue
+        sp = ln.strip().split()
+        for item in sp:
+            frame, n_layers = tuple(item.split(":"))
+            action_id_props[int(frame)] = { "n_layers": int(n_layers) } # expect <frame_id>:<n_layers>
+
+# SPECIALIZE CONTROLS
+if protocol_text != None:
+    log << "Installing protocol" << endl
+    id_props = {}
+    for ln in protocol_text.lines:
+        if 'PROTOCOL' in ln: continue
+        sp = ln.split()
+        if sp[0] == '#' or sp[0][0] == '#': continue
+        ids = map(int, sp[0].split(","))
+        props = {}
+        for i in range(1, len(sp)):
+            abbrev_value = sp[i].split('=')
+            full_key = expand_abbrev[abbrev_value[0].strip()]
+            value = abbrev_value[1].strip()
+            props[full_key] = value
+        for id in ids:
+            id_props[id] = props
+    for f in frames:
+        try:
+            props = id_props[f.rank]
+            if VERBOSE: log << log.item << "Slide id" << f.rank << endl
+        except KeyError:
+            props = {}
+        f.UpdateProperties(props)
+
+# EMBED SCRIPTS & STYLES IF NECESSARY
+svg.attrib["%snote" % SOZI_NS]="Sozi with canvas-embedded controls"
+
+scripts = tree.GetAll('%sscript' % SVG_NS)
+script_ids = []
+for s in scripts:
+    if s.node.attrib.has_key("id"):
+        script_ids.append(s.node.attrib["id"])
+styles = tree.GetAll('%sstyle' % SVG_NS)
+style_ids = []
+for s in styles:
+    if s.node.attrib.has_key("id"):
+        style_ids.append(s.node.attrib["id"])
+
+embed_js_main = False if 'sozi-script' in script_ids else True
+embed_js_media = False if 'sozi-extras-media-script' in script_ids else True
+embed_css = False if 'sozi-style' in style_ids else True
+
+if embed_js_main:
+    log << "Embedding controls script" << endl
+    sozi_js_main = '%s/sozi.min.js' % (SOZI_PATH)
+    text_js_main = (open(sozi_js_main, 'r').read())
+    node_js_main = etree.SubElement(svg, 'script', attrib={"id":"sozi-script", "%sversion" % SOZI_NS:"13.11-30213629"})
+    node_js_main.text = text_js_main
+else:
+    log << "Detected controls script" << endl
+if embed_js_media:
+    log << "Embedding media script" << endl
+    sozi_js_media = '%s/sozi_extras_media.min.js' % (SOZI_PATH)
+    text_js_media = (open(sozi_js_media, 'r').read())
+    node_js_media = etree.SubElement(svg, 'script', attrib={"id":"sozi-extras-media-script", "%sversion" % SOZI_NS:"13.11-30213629"})
+    node_js_media.text = text_js_media
+else:
+    log << "Detected media script" << endl
+if embed_css:
+    log << "Embedding css-style" << endl
+    sozi_css = '%s/sozi.min.css' % (SOZI_PATH)    
+    text_css = (open(sozi_css, 'r').read())    
+    node_css = etree.SubElement(svg, 'style',  attrib={"id":"sozi-style", "%sversion" % SOZI_NS:"13.11-30213629"})    
+    node_css.text = text_css
+else:
+    log << "Detected css-style" << endl
+
+# EMBED FRAMES
+log << "Embedding frames " << endl
+prev_id = -1
+for f in frames:
+    node = f.ToElement()
+    for child in node:
+        svg.append(child)
+    prev_id = f.sequ_id
+if options.mirror:
+    frames.pop(-1)
+    frames.reverse()
+    for f in frames:
+        f.SetSequenceIndex(prev_id+1)
+        node = f.ToElement()
+        for child in node:
+            svg.append(child)
+        prev_id += 1
+
+if options.hide_frames:
+    for g in gs_frames:
+        g.node.attrib["style"] = "display:none"
+if options.hide_controls:
+    for g in gs_controls:
+        g.node.attrib["style"] = "display:none"
+
+
+# COMPILE SVG FILE
+log << "Compiling svg-file," << flush
+svg_ofs = open(out_svg, 'w')
+svg_ofs.write(etree.tostring(tree.GetRoot(), pretty_print=True))
+svg_ofs.close()
+log << "done." << endl
+
+
+
+        
+
+if options.pdf != '':
+    log << "Generate PDF (=> '%s')" % options.pdf << endl
+    
+    # AUTO-TEXTS
+    log << "Checking for auto page labels in '%s'" % TEXTS_LABEL << flush
+    page_label = None
+    gs_texts = tree.GetAllWhere('%sg' % SVG_NS, key=lambda x: x.node.attrib['%slabel' % INX_NS] if x.node.attrib.has_key('%slabel' % INX_NS) else '', value=TEXTS_LABEL)
+    for g in gs_texts:
+        texts = g.DiveForAll('%stext' % SVG_NS)
+        for text_node in texts:
+            new_text = Text(node=text_node.node)
+            if new_text.text == 'i':
+                page_label = new_text
+                log << "- found" << flush
+    log << endl
+    
+    log << "Determining base-layer transforms" << endl
+    base_trafos = []
+    for g in base_layers:
+        try:
+            init_trafo = g.node.attrib['transform']
+            print(init_trafo)
+            if init_trafo == "":
+                dx = 0.
+                dy = 0.
+            else:
+                assert 'translate' in init_trafo # Other transforms not implemented
+                tmp = init_trafo.split('(')[-1]
+                tmp = tmp[:-1]
+                tmp = tmp.split(',')
+                dx = float(tmp[0])
+                dy = float(tmp[1])
+        except KeyError:
+            dx = 0.
+            dy = 0.
+        base_trafos.append([dx,dy])
+
+    print(dx, dy)
+    out_pdfs = ''
+
+    # Hide subcanvas layers
+    for s, sub in subcanvas_map.iteritems():
+        sub.node.attrib["style"] = "display:none"
+    # Render frames
+    for f in frames:
+        x0 = f.rect.x
+        x1 = x0+f.rect.w
+        y0 = f.rect.y
+        y1 = y0+f.rect.h
+        # Unfortunately, area export does not work with the pdf export of inkscape ...
+        xy01 = '%+1.7f:%+1.7f:%+1.7f:%+1.7f' % (x0, -y1, x1, -y0)
+        # ... hence, write temp. svg with base-layer shifts:
+        for g,t in zip(base_layers, base_trafos):
+            dx = t[0]
+            dy = t[1]
+            g.node.attrib['transform'] = 'translate(%+1.7f,%+1.7f)' % (-x0+dx,-y0+dy)
+        # Adjust page number
+        if page_label != None:
+            page_label.Set('%d' % (f.rank-1))
+
+        # Render sublayers
+        action_info = action_id_props[f.rank-1] if (f.rank-1) in action_id_props else { "n_layers": 1 }
+        for sublayer in range(action_info["n_layers"]):
+            print("Frame %d: sublayer idx %d" % (f.rank, sublayer))
+            if sublayer > 0:
+                subcanvas_map[sublayer]
+                subcanvas_map[sublayer].node.attrib["style"] = "display:inline"
+            else:
+                for s, sub in subcanvas_map.iteritems():
+                    sub.node.attrib["style"] = "display:none"
+
+            out_pdf = '%s_%d_%d.pdf' % (options.tmp_prefix, f.rank, sublayer)
+            out_pdfs += out_pdf + ' '
+            if len(options.render) and not ((f.rank-1) in options.render):  
+                continue    
+
+            tmp_svg = 'tmp.svg'
+            svg_ofs = open('tmp.svg', 'w')
+            svg_ofs.write(etree.tostring(tree.GetRoot(), pretty_print=True))
+            svg_ofs.close()        
+
+            command = "inkscape -f %s -z -C -A %s" % (tmp_svg, out_pdf)
+            log << command << "(Rect-ID %s)" % f.rect.id << endl
+            log >> log.devnull >> log.assert_zero >> command
+            if options.pdf2ps2pdf:
+                log << "... ps2pdf" << log.flush
+                log >> log.devnull >> log.assert_zero >> "pdf2ps %s %s.ps" % (out_pdf, out_pdf)
+                log << "... pdf2ps" << log.flush
+                log >> log.devnull >> log.assert_zero >> "ps2pdf %s.ps %s" % (out_pdf, out_pdf)
+                log << log.endl
+
+    log >> "pdftk %s cat output %s" % (out_pdfs, options.pdf)
+    if options.clean:
+        log >> "rm -f tmp.svg %s" % out_pdfs
+
+    
+
+
+
+
+
+
+
+
+
+
+
+
+
