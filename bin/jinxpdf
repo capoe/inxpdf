@@ -5,9 +5,7 @@ from inxpdf.moxml import *
 from inxpdf.logger import log, endl, flush, os, sys
 import numpy as np
 import inxpdf
-SCRIPTDIR = os.path.join(
-    os.path.dirname(
-        os.path.abspath(__file__)), "..")
+ROOTDIR = os.environ["INXPDF_ROOT"]
 
 if __name__ == "__main__":
     # PROGRAM OPTIONS
@@ -30,10 +28,10 @@ if __name__ == "__main__":
     log.AddArg('tmp_prefix', type=str, default='frame')
     log.AddArg('clean', 'toggle', default=True)
     options = log.Parse()
-    options.render = set(map(int,options.render))
+    options.render = set(list(map(int,options.render)))
 
     # SYSTEM PATHS
-    SOZI_PATH = os.path.join(SCRIPTDIR, 'js')
+    SOZI_PATH = os.path.join(ROOTDIR, 'js')
 
     # PROCESS OPTIONS
     in_svg = options.file
@@ -67,7 +65,7 @@ if __name__ == "__main__":
     log << "Generating frames from layer '%s'" % FRAMES_LABEL << endl
     gs_frames = tree.GetAllWhere('%sg' % SVG_NS, 
         key=lambda x: x.node.attrib['%slabel' % INX_NS] \
-            if x.node.attrib.has_key('%slabel' % INX_NS) else '', 
+            if (('%slabel' % INX_NS) in x.node.attrib) else '', 
                 value=FRAMES_LABEL)
     for g in gs_frames:
         g_rects = g.DiveForAll('%srect' % SVG_NS)
@@ -100,7 +98,7 @@ if __name__ == "__main__":
     sequ_texts = []
     log << "Generating sequence from layer '%s'" % FRAMES_LABEL << endl
     gs = tree.GetAllWhere('%sg' % SVG_NS, key=lambda x: x.node.attrib['%slabel' % INX_NS] \
-        if x.node.attrib.has_key('%slabel' % INX_NS) else '', value=FRAMES_LABEL)
+        if (('%slabel' % INX_NS) in x.node.attrib) else '', value=FRAMES_LABEL)
     for g in gs:
         g_texts = g.DiveForAll('%stext' % SVG_NS)
         for text in g_texts:
@@ -192,7 +190,7 @@ if __name__ == "__main__":
     log << "Reading controls from layer '%s'" % CONTROLS_LABEL << endl
     gs_controls = tree.GetAllWhere('%sg' % SVG_NS, 
         key=lambda x: x.node.attrib['%slabel' % INX_NS] \
-            if x.node.attrib.has_key('%slabel' % INX_NS) else '', 
+            if (('%slabel' % INX_NS) in x.node.attrib) else '', 
                 value=CONTROLS_LABEL)
     for g in gs_controls:
         g_texts = g.DiveForAll('%stext' % SVG_NS)
@@ -241,7 +239,7 @@ if __name__ == "__main__":
     for i in range(10):
         gs_layer = tree.GetAllWhere('%sg' % SVG_NS, 
             key=lambda x: x.node.attrib['%slabel' % INX_NS] \
-                if x.node.attrib.has_key('%slabel' % INX_NS) else '', 
+                if (('%slabel' % INX_NS) in x.node.attrib) else '', 
                     value="Canvas_%02d" % i)
         if len(gs_layer) > 0:
             subcanvas_map[i+1] = gs_layer[0]
@@ -263,7 +261,7 @@ if __name__ == "__main__":
             if 'PROTOCOL' in ln: continue
             sp = ln.split()
             if sp[0] == '#' or sp[0][0] == '#': continue
-            ids = map(int, sp[0].split(","))
+            ids = list(map(int, sp[0].split(",")))
             props = {}
             for i in range(1, len(sp)):
                 abbrev_value = sp[i].split('=')
@@ -285,12 +283,12 @@ if __name__ == "__main__":
     scripts = tree.GetAll('%sscript' % SVG_NS)
     script_ids = []
     for s in scripts:
-        if s.node.attrib.has_key("id"):
+        if 'id' in s.node.attrib:
             script_ids.append(s.node.attrib["id"])
     styles = tree.GetAll('%sstyle' % SVG_NS)
     style_ids = []
     for s in styles:
-        if s.node.attrib.has_key("id"):
+        if 'id' in s.node.attrib:
             style_ids.append(s.node.attrib["id"])
     embed_js_main = False if 'sozi-script' in script_ids else True
     embed_js_media = False if 'sozi-extras-media-script' in script_ids else True
@@ -352,7 +350,7 @@ if __name__ == "__main__":
     # COMPILE SVG FILE
     log << "Compiling svg-file," << flush
     svg_ofs = open(out_svg, 'w')
-    svg_ofs.write(etree.tostring(tree.GetRoot(), pretty_print=True))
+    svg_ofs.write(etree.tostring(tree.GetRoot(), encoding='utf8', pretty_print=True).decode('utf8'))
     svg_ofs.close()
     log << "done." << endl
 
@@ -364,7 +362,7 @@ if __name__ == "__main__":
         page_label = None
         gs_texts = tree.GetAllWhere('%sg' % SVG_NS, 
             key=lambda x: x.node.attrib['%slabel' % INX_NS] \
-                if x.node.attrib.has_key('%slabel' % INX_NS) else '', 
+                if (('%slabel' % INX_NS) in x.node.attrib) else '', 
                     value=TEXTS_LABEL)
         for g in gs_texts:
             texts = g.DiveForAll('%stext' % SVG_NS)
@@ -397,7 +395,7 @@ if __name__ == "__main__":
         out_pdfs = ''
 
         # Hide subcanvas layers
-        for s, sub in subcanvas_map.iteritems():
+        for s, sub in subcanvas_map.items():
             sub.node.attrib["style"] = "display:none"
         # Render frames
         for f in frames:
@@ -425,7 +423,7 @@ if __name__ == "__main__":
                     subcanvas_map[sublayer]
                     subcanvas_map[sublayer].node.attrib["style"] = "display:inline"
                 else:
-                    for s, sub in subcanvas_map.iteritems():
+                    for s, sub in subcanvas_map.items():
                         sub.node.attrib["style"] = "display:none"
 
                 out_pdf = '%s_%d_%d.pdf' % (options.tmp_prefix, f.rank, sublayer)
@@ -435,7 +433,7 @@ if __name__ == "__main__":
 
                 tmp_svg = 'tmp.svg'
                 svg_ofs = open('tmp.svg', 'w')
-                svg_ofs.write(etree.tostring(tree.GetRoot(), pretty_print=True))
+                svg_ofs.write(etree.tostring(tree.GetRoot(), encoding='utf8', pretty_print=True).decode('utf8'))
                 svg_ofs.close()        
 
                 command = "inkscape -f %s -z -C -A %s" % (tmp_svg, out_pdf)

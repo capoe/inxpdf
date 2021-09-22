@@ -35,7 +35,7 @@ class Rect(object):
         self.x = float(self.node.attrib['x'])
         self.y = float(self.node.attrib['y'])
         self.xy = np.array([self.x, self.y])        
-        if self.node.attrib.has_key('transform'):
+        if 'transform' in self.node.attrib:
             raw = self.node.attrib['transform']
             if 'matrix' in raw:
                 raw = raw[7:-1].split(',')
@@ -52,7 +52,7 @@ class Rect(object):
                 self.y *= sy
                 self.xy = np.array([self.x, self.y])
             elif 'translate' in raw:
-                dr = map(float, raw.replace('translate','').replace('(','').replace(')','').split(','))
+                dr = list(map(float, raw.replace('translate','').replace('(','').replace(')','').split(',')))
                 self.x = self.x + dr[0]
                 self.y = self.y + dr[1]
                 self.xy = np.array([self.x, self.y])
@@ -71,7 +71,7 @@ class Text(object):
         self.y = float(self.node.attrib['y'])
         self.xy = np.array([self.x, self.y])
 
-        if self.node.attrib.has_key('transform'):
+        if 'transform' in self.node.attrib:
             raw = self.node.attrib['transform']
             if 'matrix' in raw:
                 raw = raw[7:-1].split(',')
@@ -128,7 +128,7 @@ class Frame(object):
              'hide':"true",
             'sozi_ns':"ns1"}
         for key in default_args.keys():
-            if not kwargs.has_key(key):
+            if not key in kwargs:
                 kwargs[key] = default_args[key]
         self.args = kwargs
         # Rank from text
@@ -142,7 +142,7 @@ class Frame(object):
         return
     def UpdateProperties(self, defaults):
         for key in defaults.keys():
-            if not self.args.has_key(key):
+            if not key in self.args:
                 log << log.mr << "Invalid defaults key '%s'" % key << endl
             else:
                 self.args[key] = defaults[key]

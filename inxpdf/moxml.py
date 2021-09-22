@@ -14,7 +14,7 @@ class XmlNode(object):
 		self.childs = []
 		for child in self.node:
 			if type(child.tag) != str: continue
-			if not self.tag_child.has_key(child.tag):
+			if not child.tag in self.tag_child:
 				self.tag_child[child.tag] = []
 			xmlnode = XmlNode(child, path+'/'+child.tag, tree)
 			self.tag_child[child.tag].append(xmlnode)
@@ -32,7 +32,7 @@ class XmlNode(object):
 		return self.tag_child.keys()
 	# GET METHODS
 	def GetAll(self, tag):
-		if self.tag_child.has_key(tag):
+		if tag in self.tag_child:
 			return self.tag_child[tag]
 		else:
 			return []
@@ -43,7 +43,7 @@ class XmlNode(object):
 				candidates.append(child)
 		return candidates
 	def GetUnique(self, tag):
-		if not self.tag_child.has_key(tag):
+		if not tag in self.tag_child:
 			raise ValueError("Invalid <XmlNode::Get> request, no such path: '%s'" % tag)
 		elif len(self.tag_child[tag]) > 1:
 			raise RuntimeError("Ambiguous <XmlNode::Get> request, path: '%s'" % tag)

@@ -55,7 +55,7 @@ def GenerateTreeDict(tree, element, path='', paths_rel_to=None):
         child_elements, childtag_element = GenerateTreeDict(tree, child, path)
         nodes = nodes + child_elements
         for key in childtag_element.keys():
-            if tag_node.has_key(key):
+            if key in tag_node:
                 if type(tag_node[key]) != list:
                     tag_node[key] = [ tag_node[key], childtag_element[key] ]
                 else:

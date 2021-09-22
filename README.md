@@ -1,18 +1,15 @@
 # (J)INXPDF
 Barebone tool to generate PDF slides from inkscape files.
 
-## Setup
+## Installation
 ```bash
-./configure.py
-source bin/INXPDFRC
-jinxpdf -h
+git clone https://github.com/capoe/inxpdf.git
+cd inxpdf
+conda create --prefix ./venv python=3.7
+conda activate ./venv
+pip install .
+export INXPDF_ROOT=$(pwd)
 ```
-
-## Dependencies
-- python2 (legacy code ... should work with python3 though)
-- numpy
-- lxml
-- pdftk (Ubuntu: install via snap)
 
 ## Usage
 ```bash
