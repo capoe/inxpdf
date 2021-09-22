@@ -2,6 +2,8 @@
 Barebone tool to generate PDF slides from inkscape files.
 
 ## Installation
+Note that pdftk must be available on your system for jinxpdf to work properly.
+
 ```bash
 git clone https://github.com/capoe/inxpdf.git
 cd inxpdf
